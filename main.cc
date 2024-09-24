@@ -37,14 +37,13 @@ class ReaderWriterProblem {
     /// max reader numbers
     static constexpr uint8_t MAX_READERS = 3;
 
-    enum SemaphoreNames { READ_COUNT = 0, MUTEX };
+    enum SemaphoreNames : uint16_t { READ_COUNT = 0, MUTEX = 1 };
 
   public:
     ReaderWriterProblem()
-        : semSet(IPC_PRIVATE, {
-                                {READ_COUNT, MAX_READERS},
-                                {MUTEX,      1          }
-    }) {}
+        : semSet{
+            IPC_PRIVATE, {{READ_COUNT, MAX_READERS}, {MUTEX, 1}}
+    } {}
 
     /**
      * @brief: when Swait's sem value >= specify min resources value, distribute
@@ -96,6 +95,7 @@ int main() {
     spdlog::set_pattern("[%^--%L--%$] [Process %P] %v");
     spdlog::cfg::load_env_levels();
     ReaderWriterProblem rwp;
+
     // fork 3 readers and 1 writer
 
     std::array< int32_t, 4 > fork_seq = {0, 1, 2, 3};

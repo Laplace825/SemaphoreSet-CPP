@@ -55,7 +55,7 @@ class SemaphoreSet {
         for (const auto &[num_id, num_val] : sem_names) {
             arg.val = num_val;
             if (semctl(semid, num_id, SETVAL, arg) == -1) {
-                perror("Error initializing semaphore");
+                spdlog::error("Error initializing semaphore in {}", __LINE__);
                 exit(1);
             }
         }
@@ -63,7 +63,7 @@ class SemaphoreSet {
         arg.val = 0; // inner_semid initializing 0
 
         if (semctl(inner_semid, 0, SETVAL, arg) == -1) {
-            perror("Error initializing semaphore");
+            spdlog::error("Error initializing semaphore in {}", __LINE__);
             exit(1);
         }
     }
