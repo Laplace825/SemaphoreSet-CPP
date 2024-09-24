@@ -19,7 +19,7 @@ class ReaderWriterProblem {
         std::srand(std::time(nullptr));
         std::fstream fs(file_name.data(), std::ios::out);
         auto val = std::rand();
-        spdlog::info("I Write this: Hello World {}", val);
+        spdlog::info("╰─ I Write this: Hello World {}", val);
         fs << "Hello World " << val << std::endl;
     }
 
@@ -55,15 +55,13 @@ class ReaderWriterProblem {
 
         // do {
         semSet.Swait({
-          {READ_COUNT, {1, -1}}
-        });
-        semSet.Swait({
-          {MUTEX, {1, 0}}
+          {READ_COUNT, {1, -1}},
+          {MUTEX,      {1, 0} }
         });
         // Reading
         // sleep(1);
-        spdlog::info(
-          "Reader id:{} Readers left:{} ", id, semSet.getVal(READ_COUNT));
+        spdlog::info("Reader id:{} Readers left:{} Mutex: {}", id,
+          semSet.getVal(READ_COUNT), semSet.getVal(MUTEX));
         read_from("file.txt");
         // sleep(1);
         semSet.Ssignal(READ_COUNT);
@@ -81,8 +79,8 @@ class ReaderWriterProblem {
 
         // Writing
         // sleep(1);
-        spdlog::info(
-          "Writer id:{} Readers Can have:{}", id, semSet.getVal(READ_COUNT));
+        spdlog::info("╭─ Writer id:{} Readers Can have:{} Mutex:{}", id,
+          semSet.getVal(READ_COUNT), semSet.getVal(MUTEX));
         write_to("file.txt");
         // sleep(1);
         semSet.Ssignal(MUTEX);

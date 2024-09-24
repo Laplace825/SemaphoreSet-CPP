@@ -2,12 +2,14 @@
 
 #include <spdlog/spdlog.h>
 #include <sys/ipc.h>
+#include <sys/mman.h>
 #include <sys/sem.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <string>
+#include <source_location>
+#include <stack>
 #include <unordered_map>
 
 namespace lap {
@@ -29,8 +31,10 @@ class SemaphoreSet {
     int16_t semid;                       // semaphore set ID
     int32_t num_sems;                    // number of semaphores in the set
 
-    int16_t inner_semid; // the class maintain semaphore, use to handle check
-                         // and sem_op == 0
+    int16_t inner_semid; // to ensure the Swait and Ssignal is atomic
+
+    int16_t block_oneself_semid;       // to block oneself
+    int16_t **ptr_record_who_block_me; // to record who block me
 
     using semun = union {
         int val;               /* Value for SETVAL */
@@ -40,14 +44,64 @@ class SemaphoreSet {
                                   (Linux-specific) */
     };
 
+    /// @note: use to change semid's value
+    /// this is actually to operate the semid
+    void sem_operation(sem_nameid_t sem_numid, int16_t sem_op,
+      std::source_location loc = std::source_location::current()) {
+        sembuf ops = {sem_numid, sem_op, SEM_UNDO};
+        if (semop(semid, &ops, 1) == -1) {
+            spdlog::error(
+              "Error signaling semaphore in {} happen in {} func {}", __LINE__,
+              loc.line(), loc.function_name());
+            exit(1);
+        }
+    }
+
+    /// @note: use to change inner_semid's value
+    /// this ensure our Swait and Ssignal is atomic
+    void matian_atomic(int16_t sem_op,
+      std::source_location loc = std::source_location::current()) {
+        sembuf inner_ops_mx = {0, sem_op, SEM_UNDO};
+        if (semop(inner_semid, &inner_ops_mx, 1) == -1) {
+            spdlog::error(
+              "Error waiting on semaphore in {} happen in {} func {}", __LINE__,
+              loc.line(), loc.function_name());
+            exit(1);
+        }
+    }
+
+    /// @note: use to block oneself
+    /// when we find the resource is not enough to distribute(value < min_val),
+    void block_oneself_or_release(sem_nameid_t who, int16_t sem_op,
+      std::source_location loc = std::source_location::current()) {
+        sembuf ops = {who, sem_op, SEM_UNDO};
+        if (semop(block_oneself_semid, &ops, 1) == -1) {
+            spdlog::error(
+              "Error signaling semaphore in {} happen in {} func {}", __LINE__,
+              loc.line(), loc.function_name());
+            exit(1);
+        }
+    }
+
   public:
     SemaphoreSet(key_t key, const sem_name_id_map_t &sem_names)
         : num_sems(sem_names.size()) {
-        semid       = semget(key, num_sems, IPC_CREAT | 0666);
-        inner_semid = semget(key, 1, IPC_CREAT | 0666);
+        semid               = semget(key, num_sems, IPC_CREAT | 0666);
+        inner_semid         = semget(key, 1, IPC_CREAT | 0666);
+        block_oneself_semid = semget(key, num_sems, IPC_CREAT | 0666);
 
-        if (semid == -1 || inner_semid == -1) {
-            perror("Error creating semaphore set");
+        /// @note: every sem has a record to record who block me
+        /// new get memory is not shared, but mmap can be shared
+        ptr_record_who_block_me = new int16_t *;
+        (*ptr_record_who_block_me) =
+          (int16_t *)mmap(nullptr, num_sems * sizeof(int16_t),
+            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        std::fill((*ptr_record_who_block_me),
+          (*ptr_record_who_block_me) + num_sems, -1);
+
+        if (semid == -1) {
+            spdlog::error("Error creating semaphore set in {}", __LINE__);
+            this->~SemaphoreSet();
             exit(1);
         }
 
@@ -56,14 +110,24 @@ class SemaphoreSet {
             arg.val = num_val;
             if (semctl(semid, num_id, SETVAL, arg) == -1) {
                 spdlog::error("Error initializing semaphore in {}", __LINE__);
+                this->~SemaphoreSet();
+                exit(1);
+            }
+
+            arg.val = 0; // block_oneself_semid initializing 0
+
+            if (semctl(block_oneself_semid, num_id, SETVAL, arg) == -1) {
+                spdlog::error("Error initializing semaphore in {}", __LINE__);
+                this->~SemaphoreSet();
                 exit(1);
             }
         }
 
-        arg.val = 0; // inner_semid initializing 0
+        arg.val = 1; // inner_semid initializing 1
 
         if (semctl(inner_semid, 0, SETVAL, arg) == -1) {
             spdlog::error("Error initializing semaphore in {}", __LINE__);
+            this->~SemaphoreSet();
             exit(1);
         }
     }
@@ -75,57 +139,81 @@ class SemaphoreSet {
         &sem_op_min_val_vector) {
         spdlog::trace(
           "Inner_sem val before Swait : {}", semctl(inner_semid, 0, GETVAL));
+        matian_atomic(Psemop);
+
+        /// push the smaller one into what_smaller
+        std::stack< std::pair< uint16_t, lap::SemIdToReduce > >
+          what_have_changed;
 
         for (auto &sem_op_with_min_val : sem_op_min_val_vector) {
-            spdlog::trace("sem {}'s val before Swait : {}",
-              sem_op_with_min_val.first,
-              semctl(semid, sem_op_with_min_val.first, GETVAL));
             if (semctl(semid, sem_op_with_min_val.first, GETVAL) >=
                 sem_op_with_min_val.second.min_val)
             {
                 if (sem_op_with_min_val.second.sem_op != 0) {
+                    what_have_changed.push(sem_op_with_min_val);
                     /// @note: we have resource to distribute
-                    sembuf ops = {sem_op_with_min_val.first,
-                      sem_op_with_min_val.second.sem_op, SEM_UNDO};
-                    if (semop(semid, &ops, 1) == -1) {
-                        perror("Error waiting on semaphore");
-                        exit(1);
-                    }
+                    sem_operation(sem_op_with_min_val.first,
+                      sem_op_with_min_val.second.sem_op);
                 }
             }
             else {
-                sembuf ops = {0, Psemop, SEM_UNDO};
-                if (semop(inner_semid, &ops, 1) == -1) {
-                    perror("Error waiting on semaphore");
-                    exit(1);
-                }
-            }
+                (*ptr_record_who_block_me)[sem_op_with_min_val.first] =
+                  sem_op_with_min_val.first;
+                spdlog::trace("Who Block sem {}'s var :{}",
+                  sem_op_with_min_val.first,
+                  (*ptr_record_who_block_me)[sem_op_with_min_val.first]);
+                /// @note: we don't have resource to distribute
+                /// go back
+                while (!what_have_changed.empty()) {
+                    auto go_back_sem_op_with_min_val = what_have_changed.top();
+                    what_have_changed.pop();
+                    spdlog::trace("go back sem {}'s val : {}",
+                      go_back_sem_op_with_min_val.first,
+                      semctl(semid, go_back_sem_op_with_min_val.first, GETVAL));
 
-            spdlog::trace("sem {}'s val After Swait : {}",
-              sem_op_with_min_val.first,
-              semctl(semid, sem_op_with_min_val.first, GETVAL));
+                    sem_operation(go_back_sem_op_with_min_val.first,
+                      -go_back_sem_op_with_min_val.second.sem_op);
+                }
+                goto block_one_self; /// jump out of the for loop
+            }
         }
+
+        // matian_atomic(Vsemop);
+
         spdlog::trace(
           "Inner_sem val after Swait : {}", semctl(inner_semid, 0, GETVAL));
+        return;
+
+        /// @note: if we reach here, we have recovered the semaphores that
+        /// we shouldn't changed before, in which situation, we jump out of
+        /// the for loop
+    block_one_self:
+        for (int16_t i = 0; i < num_sems; ++i) {
+            spdlog::trace(
+              "Block sem {}'s var :{}", i, (*ptr_record_who_block_me)[i]);
+            if ((*ptr_record_who_block_me)[i] != -1)
+                block_oneself_or_release((*ptr_record_who_block_me)[i], Psemop);
+        }
+        // matian_atomic(Vsemop);
+        // spdlog::trace(
+        //   "Inner_sem val after Swait : {}", semctl(inner_semid, 0, GETVAL));
     }
 
     void Ssignal(sem_nameid_t sem_numid, int16_t sem_op = Vsemop) {
         spdlog::trace(
           "Inner_sem val before Ssignal : {}", semctl(inner_semid, 0, GETVAL));
+        // matian_atomic(Psemop);
 
-        sembuf ops = {sem_numid, sem_op, SEM_UNDO};
-        if (semop(semid, &ops, 1) == -1) {
-            perror("Error signaling semaphore");
-            exit(1);
+        spdlog::trace("Release find {}, sem {}'s",
+          (*ptr_record_who_block_me)[sem_numid] != -1, sem_numid);
+        if ((*ptr_record_who_block_me)[sem_numid] != -1 &&
+            semctl(block_oneself_semid, sem_numid, GETVAL) <= 0)
+        {
+            block_oneself_or_release(sem_numid, Vsemop);
         }
 
-        if (semctl(inner_semid, 0, GETVAL) <= 0) {
-            ops = {0, Vsemop, SEM_UNDO};
-            if (semop(inner_semid, &ops, 1) == -1) {
-                perror("Error signaling semaphore");
-                exit(1);
-            }
-        }
+        matian_atomic(Vsemop);
+        sem_operation(sem_numid, sem_op);
 
         spdlog::trace(
           "Inner_sem val after Ssignal : {}", semctl(inner_semid, 0, GETVAL));
@@ -135,6 +223,15 @@ class SemaphoreSet {
 
     int32_t getVal(sem_nameid_t sem_numid) {
         return semctl(semid, sem_numid, GETVAL);
+    }
+
+    ~SemaphoreSet() {
+        semctl(semid, 0, IPC_RMID);
+        semctl(inner_semid, 0, IPC_RMID);
+        semctl(block_oneself_semid, 0, IPC_RMID);
+
+        munmap((*ptr_record_who_block_me), num_sems * sizeof(int16_t));
+        delete ptr_record_who_block_me;
     }
 };
 

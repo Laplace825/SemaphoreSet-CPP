@@ -8,16 +8,16 @@ ninja -C cmake-build -j 8 -v
 
 ok=`echo $?`
 
+
 if [ $ok == 0 ]; then
 
-while true;
+while [ $IN -lt 10 ];
 do
     IN=$((IN+1))
-    echo -e "\033[1;33m========Running $IN=========\033[0m"
-    ./cmake-build/SHU_OS_DIS_2
-    read
+    # echo -e "\033[1;33m========Running $IN=========\033[0m"
+    # sleep 1
+    SPDLOG_LEVEL=info ./cmake-build/SHU_OS_DIS_2 | grep Write
+    # sleep 1
 done
 
 fi
-
-
