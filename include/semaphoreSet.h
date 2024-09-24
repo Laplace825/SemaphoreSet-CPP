@@ -21,19 +21,19 @@ using sem_name_id_map_t = std::unordered_map< sem_nameid_t, int32_t >;
 
 using SemIdToReduce = struct {
     int32_t min_val; /// min resource value
-    int16_t sem_op;  /// operation to semaphore
+    int32_t sem_op;  /// operation to semaphore
 };
 
 class SemaphoreSet {
   private:
     static constexpr int8_t Psemop = -1; // semaphore operation for P
     static constexpr int8_t Vsemop = 1;  // semaphore operation for V
-    int16_t semid;                       // semaphore set ID
+    int32_t semid;                       // semaphore set ID
     int32_t num_sems;                    // number of semaphores in the set
 
-    int16_t inner_semid; // to ensure the Swait and Ssignal is atomic
+    int32_t inner_semid; // to ensure the Swait and Ssignal is atomic
 
-    int16_t block_oneself_semid;       // to block oneself
+    int32_t block_oneself_semid;       // to block oneself
     int16_t **ptr_record_who_block_me; // to record who block me
 
     using semun = union {
@@ -83,6 +83,27 @@ class SemaphoreSet {
         }
     }
 
+    void check_semctl_error() {
+        spdlog::error("Error initializing semaphore in {} error {}", __LINE__,
+          std::strerror(errno));
+        switch (errno) {
+            case EINVAL:
+                spdlog::error("Invalid semaphore identifier, command, or "
+                              "semaphore number.");
+                break;
+            case EACCES:
+                spdlog::error("Permission denied.");
+                break;
+            case ENOMEM:
+                spdlog::error("Not enough memory.");
+                break;
+            default:
+                spdlog::error("Unknown error.");
+                break;
+        }
+        exit(1);
+    }
+
   public:
     SemaphoreSet(key_t key, const sem_name_id_map_t &sem_names)
         : num_sems(sem_names.size()) {
@@ -99,18 +120,23 @@ class SemaphoreSet {
         std::fill((*ptr_record_who_block_me),
           (*ptr_record_who_block_me) + num_sems, -1);
 
-        if (semid == -1) {
+        if (semid == -1 || inner_semid == -1 || block_oneself_semid == -1) {
             spdlog::error("Error creating semaphore set in {}", __LINE__);
             this->~SemaphoreSet();
+            check_semctl_error();
             exit(1);
         }
 
         semun arg;
         for (const auto &[num_id, num_val] : sem_names) {
             arg.val = num_val;
+            spdlog::trace(
+              "semid: {} num_id: {} num_val: {}", semid, num_id, num_val);
             if (semctl(semid, num_id, SETVAL, arg) == -1) {
                 spdlog::error("Error initializing semaphore in {}", __LINE__);
                 this->~SemaphoreSet();
+
+                check_semctl_error();
                 exit(1);
             }
 
@@ -119,6 +145,8 @@ class SemaphoreSet {
             if (semctl(block_oneself_semid, num_id, SETVAL, arg) == -1) {
                 spdlog::error("Error initializing semaphore in {}", __LINE__);
                 this->~SemaphoreSet();
+
+                check_semctl_error();
                 exit(1);
             }
         }
@@ -128,6 +156,8 @@ class SemaphoreSet {
         if (semctl(inner_semid, 0, SETVAL, arg) == -1) {
             spdlog::error("Error initializing semaphore in {}", __LINE__);
             this->~SemaphoreSet();
+
+            check_semctl_error();
             exit(1);
         }
     }
@@ -226,10 +256,6 @@ class SemaphoreSet {
     }
 
     ~SemaphoreSet() {
-        semctl(semid, 0, IPC_RMID);
-        semctl(inner_semid, 0, IPC_RMID);
-        semctl(block_oneself_semid, 0, IPC_RMID);
-
         munmap((*ptr_record_who_block_me), num_sems * sizeof(int16_t));
         delete ptr_record_who_block_me;
     }

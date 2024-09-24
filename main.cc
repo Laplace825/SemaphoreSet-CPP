@@ -107,7 +107,7 @@ int main() {
         else {
             if (fork() == 0) {
                 rwp.reader(fork_ind);
-                exit(0);
+                break;
             }
         }
     }

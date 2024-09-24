@@ -7,6 +7,7 @@ cmake -B cmake-build -S . -G Ninja
 ninja -C cmake-build -j 8 -v
 
 ok=`echo $?`
+export SPDLOG_LEVEL=info
 
 
 if [ $ok == 0 ]; then
@@ -14,10 +15,10 @@ if [ $ok == 0 ]; then
 while [ $IN -lt 10 ];
 do
     IN=$((IN+1))
-    # echo -e "\033[1;33m========Running $IN=========\033[0m"
-    # sleep 1
-    SPDLOG_LEVEL=info ./cmake-build/SHU_OS_DIS_2 | grep Write
-    # sleep 1
+    echo -e "\033[1;33m========Running $IN=========\033[0m"
+    read 
+    ./cmake-build/SHU_OS_DIS_2
+    read 
 done
 
 fi
