@@ -1,6 +1,7 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 #include <sys/sem.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -35,7 +36,7 @@ class ReaderWriterProblem {
     lap::SemaphoreSet semSet;
 
     /// max reader numbers
-    static constexpr uint8_t MAX_READERS = 3;
+    static constexpr uint8_t MAX_READERS = 4;
 
     enum SemaphoreNames : uint16_t { READ_COUNT = 0, MUTEX = 1 };
 
@@ -96,7 +97,7 @@ int main() {
 
     // fork 3 readers and 1 writer
 
-    std::array< int32_t, 4 > fork_seq = {0, 1, 2, 3};
+    std::array< int32_t, 5 > fork_seq = {0, 1, 2, 3, 4};
     std::shuffle(
       fork_seq.begin(), fork_seq.end(), std::mt19937(std::random_device()()));
 

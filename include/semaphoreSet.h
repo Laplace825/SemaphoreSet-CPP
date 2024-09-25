@@ -31,8 +31,6 @@ class SemaphoreSet {
     int32_t semid;                       // semaphore set ID
     int32_t num_sems;                    // number of semaphores in the set
 
-    int32_t inner_semid; // to ensure the Swait and Ssignal is atomic
-
     int32_t block_oneself_semid;       // to block oneself
     int16_t **ptr_record_who_block_me; // to record who block me
 
@@ -52,19 +50,6 @@ class SemaphoreSet {
         if (semop(semid, &ops, 1) == -1) {
             spdlog::error(
               "Error signaling semaphore in {} happen in {} func {}", __LINE__,
-              loc.line(), loc.function_name());
-            exit(1);
-        }
-    }
-
-    /// @note: use to change inner_semid's value
-    /// this ensure our Swait and Ssignal is atomic
-    void matian_atomic(int16_t sem_op,
-      std::source_location loc = std::source_location::current()) {
-        sembuf inner_ops_mx = {0, sem_op, SEM_UNDO};
-        if (semop(inner_semid, &inner_ops_mx, 1) == -1) {
-            spdlog::error(
-              "Error waiting on semaphore in {} happen in {} func {}", __LINE__,
               loc.line(), loc.function_name());
             exit(1);
         }
@@ -108,7 +93,6 @@ class SemaphoreSet {
     SemaphoreSet(key_t key, const sem_name_id_map_t &sem_names)
         : num_sems(sem_names.size()) {
         semid               = semget(key, num_sems, IPC_CREAT | 0666);
-        inner_semid         = semget(key, 1, IPC_CREAT | 0666);
         block_oneself_semid = semget(key, num_sems, IPC_CREAT | 0666);
 
         /// @note: every sem has a record to record who block me
@@ -120,7 +104,7 @@ class SemaphoreSet {
         std::fill((*ptr_record_who_block_me),
           (*ptr_record_who_block_me) + num_sems, -1);
 
-        if (semid == -1 || inner_semid == -1 || block_oneself_semid == -1) {
+        if (semid == -1 || block_oneself_semid == -1) {
             spdlog::error("Error creating semaphore set in {}", __LINE__);
             this->~SemaphoreSet();
             check_semctl_error();
@@ -150,16 +134,6 @@ class SemaphoreSet {
                 exit(1);
             }
         }
-
-        arg.val = 1; // inner_semid initializing 1
-
-        if (semctl(inner_semid, 0, SETVAL, arg) == -1) {
-            spdlog::error("Error initializing semaphore in {}", __LINE__);
-            this->~SemaphoreSet();
-
-            check_semctl_error();
-            exit(1);
-        }
     }
 
     /// {    sem_nameid  P,v op     min_val
@@ -167,9 +141,12 @@ class SemaphoreSet {
     /// }
     void Swait(const std::vector< std::pair< uint16_t, lap::SemIdToReduce > >
         &sem_op_min_val_vector) {
-        spdlog::trace(
-          "Inner_sem val before Swait : {}", semctl(inner_semid, 0, GETVAL));
-        matian_atomic(Psemop);
+        /// @note: when resource release and the process goes out of
+        /// block to continue, we judge the resource again to avoid if
+        /// the resource changed less than 0 during the block period
+        ///
+        /// @note: see the only goto below
+    judge_again:
 
         /// push the smaller one into what_smaller
         std::stack< std::pair< uint16_t, lap::SemIdToReduce > >
@@ -189,6 +166,7 @@ class SemaphoreSet {
             else {
                 (*ptr_record_who_block_me)[sem_op_with_min_val.first] =
                   sem_op_with_min_val.first;
+
                 spdlog::trace("Who Block sem {}'s var :{}",
                   sem_op_with_min_val.first,
                   (*ptr_record_who_block_me)[sem_op_with_min_val.first]);
@@ -203,37 +181,30 @@ class SemaphoreSet {
 
                     sem_operation(go_back_sem_op_with_min_val.first,
                       -go_back_sem_op_with_min_val.second.sem_op);
+                    spdlog::trace("After go back sem {}'s val : {}",
+                      go_back_sem_op_with_min_val.first,
+                      semctl(semid, go_back_sem_op_with_min_val.first, GETVAL));
                 }
-                goto block_one_self; /// jump out of the for loop
+                // matian_atomic(Vsemop);
+                for (int16_t i = 0; i < num_sems; ++i) {
+                    spdlog::trace("Block sem {}'s var :{}", i,
+                      (*ptr_record_who_block_me)[i]);
+                    if ((*ptr_record_who_block_me)[i] != -1)
+                        block_oneself_or_release(
+                          (*ptr_record_who_block_me)[i], Psemop);
+                }
+
+                /// @note: when resource release and the process goes out of
+                /// block to continue, we judge the resource again to avoid if
+                /// the resource changed less than 0 during the block period
+                goto judge_again;
             }
         }
 
-        // matian_atomic(Vsemop);
-
-        spdlog::trace(
-          "Inner_sem val after Swait : {}", semctl(inner_semid, 0, GETVAL));
         return;
-
-        /// @note: if we reach here, we have recovered the semaphores that
-        /// we shouldn't changed before, in which situation, we jump out of
-        /// the for loop
-    block_one_self:
-        for (int16_t i = 0; i < num_sems; ++i) {
-            spdlog::trace(
-              "Block sem {}'s var :{}", i, (*ptr_record_who_block_me)[i]);
-            if ((*ptr_record_who_block_me)[i] != -1)
-                block_oneself_or_release((*ptr_record_who_block_me)[i], Psemop);
-        }
-        // matian_atomic(Vsemop);
-        // spdlog::trace(
-        //   "Inner_sem val after Swait : {}", semctl(inner_semid, 0, GETVAL));
     }
 
     void Ssignal(sem_nameid_t sem_numid, int16_t sem_op = Vsemop) {
-        spdlog::trace(
-          "Inner_sem val before Ssignal : {}", semctl(inner_semid, 0, GETVAL));
-        // matian_atomic(Psemop);
-
         spdlog::trace("Release find {}, sem {}'s",
           (*ptr_record_who_block_me)[sem_numid] != -1, sem_numid);
         if ((*ptr_record_who_block_me)[sem_numid] != -1 &&
@@ -242,11 +213,7 @@ class SemaphoreSet {
             block_oneself_or_release(sem_numid, Vsemop);
         }
 
-        matian_atomic(Vsemop);
         sem_operation(sem_numid, sem_op);
-
-        spdlog::trace(
-          "Inner_sem val after Ssignal : {}", semctl(inner_semid, 0, GETVAL));
     }
 
     int32_t getSemid() const { return semid; }

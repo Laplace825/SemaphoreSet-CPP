@@ -7,7 +7,6 @@ cmake -B cmake-build -S . -G Ninja
 ninja -C cmake-build -j 8 -v
 
 ok=`echo $?`
-export SPDLOG_LEVEL=info
 
 
 if [ $ok == 0 ]; then
