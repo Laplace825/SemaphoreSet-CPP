@@ -1,15 +1,20 @@
-## build and run
+## build this project
+
+```bash
+$ bash scripts/build.sh
+```
+
+## just run
 
 in the project root folder.
 
 ```bash
-$ bash run.sh
+$ bash scripts/run.sh
 ```
 
-or  set the log level
+## set the log level to debug
 
 ```bash
 $ export SPDLOG_LEVEL=debug # trace , info , debug ...
 $ bash run.sh
-
 ```
