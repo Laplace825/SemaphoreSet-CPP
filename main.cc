@@ -38,13 +38,13 @@ class ReaderWriterProblem {
   private:
     lap::SemaphoreSet semSet;
 
-    enum SemaphoreNames { READ_LEFT = 0, RW_MUTEX, WRITER_WAIT };
+    enum SemaphoreNames { READ_LEFT = 0, RW_MUTEX, WAIT };
 
   public:
     ReaderWriterProblem()
         : semSet{
             IPC_PRIVATE,
-            {{READ_LEFT, MAX_READERS}, {RW_MUTEX, 1}, {WRITER_WAIT, 1}}
+            {{READ_LEFT, MAX_READERS}, {RW_MUTEX, 1}, {WAIT, 1}}
     } {}
 
     /**
@@ -54,15 +54,15 @@ class ReaderWriterProblem {
      */
     void reader(int32_t id) {
         semSet.Swait({
-          {READ_LEFT,   {1, -1}},
-          {WRITER_WAIT, {1, 0} },
-          {RW_MUTEX,    {0, 0} },
+          {READ_LEFT, {1, -1}},
+          {WAIT,      {1, 0} },
+          {RW_MUTEX,  {1, 0} },
         });
 
         // Reading
         spdlog::info("Reader id:{} Readers left:{} Write Mutex:{}"
                      " Reader Mutex:{}",
-          id, semSet.getVal(READ_LEFT), semSet.getVal(WRITER_WAIT),
+          id, semSet.getVal(READ_LEFT), semSet.getVal(WAIT),
           semSet.getVal(RW_MUTEX));
         read_from("file.txt", id);
 
@@ -71,7 +71,7 @@ class ReaderWriterProblem {
 
     void writer(int32_t id) {
         semSet.Swait({
-          {WRITER_WAIT, {1, -1}},
+          {WAIT, {1, -1}},
         });
         semSet.Swait({
           {RW_MUTEX,  {1, -1}},
@@ -82,10 +82,10 @@ class ReaderWriterProblem {
         spdlog::info("╭─ Writer id:{} Readers left:{} Write Mutex:{} Reader "
                      "Mutex:{}",
           id, semSet.getVal(READ_LEFT), semSet.getVal(RW_MUTEX),
-          semSet.getVal(WRITER_WAIT));
+          semSet.getVal(WAIT));
         write_to("file.txt");
 
-        semSet.Ssignal(WRITER_WAIT);
+        semSet.Ssignal(WAIT);
         semSet.Ssignal(RW_MUTEX);
     }
 };
