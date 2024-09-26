@@ -6,6 +6,6 @@ do
     IN=$((IN+1))
     echo -e "\033[1;33m========Running $IN=========\033[0m"
     read 
-    ./cmake-build/SHU_OS_DIS_2
+    ./bin/SemaphoreSet
     read 
 done

@@ -10,9 +10,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <random>
-#include <vector>
 
 #include "semaphore_set.h"
+
+/// max reader numbers
+constexpr int16_t MAX_READERS = 3;
+constexpr int16_t MAX_WRITERS = 1;
 
 class ReaderWriterProblem {
   private:
@@ -35,19 +38,13 @@ class ReaderWriterProblem {
   private:
     lap::SemaphoreSet semSet;
 
-/// max reader numbers
-#if __cplusplus >= 201402L
-    static constexpr uint8_t MAX_READERS = 3;
-#else
-    const uint8_t MAX_READERS = 3;
-#endif
-
-    enum SemaphoreNames : uint16_t { READ_COUNT = 0, MUTEX = 1 };
+    enum SemaphoreNames { READ_LEFT = 0, RW_MUTEX, WRITER_WAIT };
 
   public:
     ReaderWriterProblem()
         : semSet{
-            IPC_PRIVATE, {{READ_COUNT, MAX_READERS}, {MUTEX, 1}}
+            IPC_PRIVATE,
+            {{READ_LEFT, MAX_READERS}, {RW_MUTEX, 1}, {WRITER_WAIT, 1}}
     } {}
 
     /**
@@ -56,39 +53,40 @@ class ReaderWriterProblem {
      * when Swait's sem value < specify min resources value, block itself
      */
     void reader(int32_t id) {
-        // do {
-        spdlog::debug("Reader {} want ", id);
         semSet.Swait({
-          {READ_COUNT, {1, -1}},
-          {MUTEX,      {1, 0} }
+          {READ_LEFT,   {1, -1}},
+          {WRITER_WAIT, {1, 0} },
+          {RW_MUTEX,    {0, 0} },
         });
 
         // Reading
-        spdlog::info("Reader id:{} Readers left:{} Mutex: {}", id,
-          semSet.getVal(READ_COUNT), semSet.getVal(MUTEX));
+        spdlog::info("Reader id:{} Readers left:{} Write Mutex:{}"
+                     " Reader Mutex:{}",
+          id, semSet.getVal(READ_LEFT), semSet.getVal(WRITER_WAIT),
+          semSet.getVal(RW_MUTEX));
         read_from("file.txt", id);
 
-        semSet.Ssignal(READ_COUNT);
-        // }
-
-        // while (true);
+        semSet.Ssignal(READ_LEFT);
     }
 
     void writer(int32_t id) {
-        // do {
-        spdlog::debug("Writer {} want ", id);
         semSet.Swait({
-          {MUTEX,      {1, -1}         },
-          {READ_COUNT, {MAX_READERS, 0}}
+          {WRITER_WAIT, {1, -1}},
+        });
+        semSet.Swait({
+          {RW_MUTEX,  {1, -1}},
+          {READ_LEFT, {3, 0} }
         });
 
         // Writing
-        spdlog::info("╭─ Writer id:{} Readers left:{} Mutex:{}", id,
-          semSet.getVal(READ_COUNT), semSet.getVal(MUTEX));
+        spdlog::info("╭─ Writer id:{} Readers left:{} Write Mutex:{} Reader "
+                     "Mutex:{}",
+          id, semSet.getVal(READ_LEFT), semSet.getVal(RW_MUTEX),
+          semSet.getVal(WRITER_WAIT));
         write_to("file.txt");
 
-        semSet.Ssignal(MUTEX);
-        // } while (true);
+        semSet.Ssignal(WRITER_WAIT);
+        semSet.Ssignal(RW_MUTEX);
     }
 };
 
@@ -97,19 +95,24 @@ int main() {
     spdlog::cfg::load_env_levels();
     ReaderWriterProblem rwp;
 
-    // fork 3 readers and 1 writer
-
-    std::array< int32_t, 4 > fork_seq = {0, 1, 2, 3};
+    std::array< int32_t, 8 > fork_seq = {0, 1, 2, 3, 4, 5, 6, 7};
     std::shuffle(
       fork_seq.begin(), fork_seq.end(), std::mt19937(std::random_device()()));
 
-    for (auto fork_ind : fork_seq) {
-        if (fork_ind == 3) {
-            rwp.writer(3);
+    // fork 5 writers and 3 readers
+    for (int32_t id : fork_seq) {
+        if (id < 4) {
+            if (fork() == 0) {
+                rwp.writer(id);
+                break;
+            }
+        }
+        else if (id == 4) {
+            rwp.writer(id);
         }
         else {
             if (fork() == 0) {
-                rwp.reader(fork_ind);
+                rwp.reader(id);
                 break;
             }
         }

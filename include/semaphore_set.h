@@ -27,12 +27,16 @@ using SemIdToReduce = struct {
     int32_t sem_op;  /// operation to semaphore
 };
 
+using sem_nameid_min_val_vec_t =
+  std::vector< std::pair< sem_nameid_t, SemIdToReduce > >;
+
 class SemaphoreSet {
   private:
-    static constexpr int8_t Psemop = -1; // semaphore operation for P
-    static constexpr int8_t Vsemop = 1;  // semaphore operation for V
-    int32_t semid;                       // semaphore set ID
-    int32_t num_sems;                    // number of semaphores in the set
+    static const int8_t Psemop = -1; // semaphore operation for P
+    static const int8_t Vsemop = 1;  // semaphore operation for V
+    int32_t semid;                   // semaphore set ID
+    int32_t num_sems;                // number of semaphores in the set
+    int32_t inner_sem_numid;         // inner semaphore number id
 
     int32_t block_oneself_semid;       // to block oneself
     int16_t **ptr_record_who_block_me; // to record who block me
@@ -67,6 +71,8 @@ class SemaphoreSet {
     void block_oneself_or_release(sem_nameid_t who, int16_t sem_op);
 #endif
 
+    void mantain_atomic(int16_t sem_op);
+
     static void check_semctl_error() {
         spdlog::error("Error initializing semaphore in {} error {}", __LINE__,
           std::strerror(errno));
@@ -92,16 +98,17 @@ class SemaphoreSet {
     SemaphoreSet(key_t key, const sem_name_id_map_t &sem_names);
 
     /// {    sem_nameid  P,v op     min_val
+    ///
     ///     {0,         { -1 ,       1 } }
+    ///
     /// }
-    void Swait(const std::vector< std::pair< uint16_t, lap::SemIdToReduce > >
-        &sem_op_min_val_vector);
+    void Swait(const sem_nameid_min_val_vec_t &sem_op_min_val_vector);
 
     void Ssignal(sem_nameid_t sem_numid, int16_t sem_op = Vsemop);
 
     int32_t getSemid() const;
 
-    int32_t getVal(sem_nameid_t sem_numid);
+    int32_t getVal(sem_nameid_t sem_numid) const;
     ~SemaphoreSet();
 };
 
